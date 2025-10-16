@@ -1,0 +1,97 @@
+{
+  "time_window": "allTime",
+  "addresses": [
+    "0x77c3ea550d2da44b120e55071f57a108f8dd5e45",
+    "0xfae95f601f3a25ace60d19dbb929f2a5c57e3571",
+    "0x9794bbbc222b6b93c1417d01aa1ff06d42e5333b",
+    "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00",
+    "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303",
+    "0x2ea18c23f72a4b6172c55b411823cdc5335923f4",
+    "0xbde2ddc49a2e6827300faa6afc93d572114a60b1",
+    "0x716bd8d3337972db99995dda5c4b34d954a61d95",
+    "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae",
+    "0x2e3d94f0562703b25c83308a05046ddaf9a8dd14"
+  ],
+  "details": [
+    {
+      "ethAddress": "0x77c3ea550d2da44b120e55071f57a108f8dd5e45",
+      "accountValue": 71676909.598203,
+      "pnl": 298525708.138203,
+      "roi": 1.2661484974,
+      "vlm": 193.33,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0xfae95f601f3a25ace60d19dbb929f2a5c57e3571",
+      "accountValue": 126378478.744021,
+      "pnl": 152487197.634021,
+      "roi": 35.465931673,
+      "vlm": 4655922.47,
+      "displayName": "thank you jefef"
+    },
+    {
+      "ethAddress": "0x9794bbbc222b6b93c1417d01aa1ff06d42e5333b",
+      "accountValue": 19741154.823494,
+      "pnl": 143192768.003494,
+      "roi": 7.5370500417,
+      "vlm": 26418280.98,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00",
+      "accountValue": 83345174.730314,
+      "pnl": 134617495.080314,
+      "roi": 1.333682665,
+      "vlm": 177055093313.66,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303",
+      "accountValue": 556240908.556083,
+      "pnl": 121650623.536083,
+      "roi": 0.2305436351,
+      "vlm": 0.0,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0x2ea18c23f72a4b6172c55b411823cdc5335923f4",
+      "accountValue": 7.634919,
+      "pnl": 106341324.52,
+      "roi": 6.7335227018,
+      "vlm": 2139884917.17,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0xbde2ddc49a2e6827300faa6afc93d572114a60b1",
+      "accountValue": 1.168945,
+      "pnl": 97539126.038945,
+      "roi": 43.3416343998,
+      "vlm": 25191221.12,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0x716bd8d3337972db99995dda5c4b34d954a61d95",
+      "accountValue": 62791878.145314,
+      "pnl": 96050727.485314,
+      "roi": 0.9979253096,
+      "vlm": 0.0,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0xb317d2bc2d3d2df5fa441b5bae0ab9d8b07283ae",
+      "accountValue": 226.37571,
+      "pnl": 92664949.94,
+      "roi": 1.1583118743,
+      "vlm": 2446348353.81,
+      "displayName": null
+    },
+    {
+      "ethAddress": "0x2e3d94f0562703b25c83308a05046ddaf9a8dd14",
+      "accountValue": 4998728.370869,
+      "pnl": 90256324.450869,
+      "roi": 1.1446300432,
+      "vlm": 3259599893.8,
+      "displayName": null
+    }
+  ]
+}
