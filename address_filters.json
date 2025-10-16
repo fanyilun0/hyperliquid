@@ -1,0 +1,25 @@
+{
+  "description": "地址过滤配置 - 用于跳过特定地址或显示名称",
+  "filters": {
+    "blocked_addresses": [
+      "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00"
+    ],
+    "blocked_display_names": [
+      "Bot",
+      "bot",
+      "机器人",
+      "量化"
+    ],
+    "blocked_keywords": [
+      "bot",
+      "robot",
+      "quant"
+    ]
+  },
+  "comments": {
+    "blocked_addresses": "完全跳过这些地址的订阅（例如高频交易机器人）",
+    "blocked_display_names": "跳过displayName完全匹配的地址",
+    "blocked_keywords": "跳过displayName包含这些关键词的地址（不区分大小写）"
+  }
+}
+

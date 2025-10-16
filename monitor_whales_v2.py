@@ -467,15 +467,128 @@ class WhaleMonitor:
             )
 
 
-def load_addresses_from_file(file_path: str = "top_traders_addresses.json") -> List[str]:
-    """从文件加载地址列表"""
+class AddressFilter:
+    """地址过滤器 - 用于跳过特定地址"""
+    
+    def __init__(self, filter_file: str = "address_filters.json"):
+        self.filter_file = filter_file
+        self.filters = self.load_filters()
+    
+    def load_filters(self) -> dict:
+        """加载过滤配置"""
+        if not Path(self.filter_file).exists():
+            logging.info(f"过滤配置文件 {self.filter_file} 不存在，不应用任何过滤")
+            return {
+                'blocked_addresses': [],
+                'blocked_display_names': [],
+                'blocked_keywords': []
+            }
+        
+        try:
+            with open(self.filter_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            filters = data.get('filters', {})
+            logging.info(f"✅ 已加载地址过滤配置: {self.filter_file}")
+            logging.info(f"   - 屏蔽地址: {len(filters.get('blocked_addresses', []))} 个")
+            logging.info(f"   - 屏蔽显示名: {len(filters.get('blocked_display_names', []))} 个")
+            logging.info(f"   - 屏蔽关键词: {len(filters.get('blocked_keywords', []))} 个")
+            return filters
+        except Exception as e:
+            logging.error(f"加载过滤配置失败: {e}")
+            return {
+                'blocked_addresses': [],
+                'blocked_display_names': [],
+                'blocked_keywords': []
+            }
+    
+    def is_blocked(self, address: str, display_name: str = None) -> tuple[bool, str]:
+        """检查地址是否被屏蔽
+        
+        Args:
+            address: 地址
+            display_name: 显示名称
+        
+        Returns:
+            (是否屏蔽, 屏蔽原因)
+        """
+        # 检查地址黑名单
+        blocked_addresses = self.filters.get('blocked_addresses', [])
+        if address.lower() in [addr.lower() for addr in blocked_addresses]:
+            return True, "地址在黑名单中"
+        
+        # 如果没有显示名称，不检查名称过滤
+        if not display_name:
+            return False, ""
+        
+        # 检查显示名称完全匹配
+        blocked_names = self.filters.get('blocked_display_names', [])
+        if display_name in blocked_names:
+            return True, f"显示名称 '{display_name}' 在黑名单中"
+        
+        # 检查关键词（不区分大小写）
+        blocked_keywords = self.filters.get('blocked_keywords', [])
+        display_name_lower = display_name.lower()
+        for keyword in blocked_keywords:
+            if keyword.lower() in display_name_lower:
+                return True, f"显示名称包含关键词 '{keyword}'"
+        
+        return False, ""
+
+
+def load_addresses_from_file(file_path: str = "top_traders_addresses.json", 
+                             apply_filter: bool = True) -> List[Dict]:
+    """从文件加载地址列表，支持过滤
+    
+    Args:
+        file_path: 地址文件路径
+        apply_filter: 是否应用过滤规则
+    
+    Returns:
+        地址信息列表 [{'address': str, 'display_name': str, 'blocked': bool}, ...]
+    """
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data.get('addresses', [])
+        
+        addresses = data.get('addresses', [])
+        details = data.get('details', [])
+        
+        # 构建地址详情映射
+        address_map = {}
+        for detail in details:
+            addr = detail.get('ethAddress')
+            if addr:
+                address_map[addr.lower()] = {
+                    'address': addr,
+                    'display_name': detail.get('displayName'),
+                    'blocked': detail.get('block', False),
+                    'pnl': detail.get('pnl', 0),
+                    'vlm': detail.get('vlm', 0)
+                }
+        
+        # 构建结果列表
+        result = []
+        for addr in addresses:
+            addr_lower = addr.lower()
+            if addr_lower in address_map:
+                result.append(address_map[addr_lower])
+            else:
+                result.append({
+                    'address': addr,
+                    'display_name': None,
+                    'blocked': False,
+                    'pnl': 0,
+                    'vlm': 0
+                })
+        
+        return result
+        
     except FileNotFoundError:
         logging.error(f"未找到文件: {file_path}")
         logging.error("请先运行 filter_top_traders.py 生成地址列表")
+        return []
+    except Exception as e:
+        logging.error(f"加载地址文件失败: {e}")
         return []
 
 
@@ -489,23 +602,79 @@ if __name__ == "__main__":
     setup_logging(log_file, debug=debug_mode)
     
     logging.info("=" * 80)
-    logging.info("Hyperliquid 大户监控器 V2")
+    logging.info("🐋 Hyperliquid 大户监控器 V2")
     logging.info("=" * 80)
-    logging.info(f"配置文件: config.json")
-    logging.info(f"日志文件: {log_file if log_file else '无'}")
-    logging.info(f"DEBUG模式: {'开启' if debug_mode else '关闭'}")
+    logging.info(f"📁 配置文件: config.json")
+    logging.info(f"📝 日志文件: {log_file if log_file else '无'}")
+    logging.info(f"🔍 DEBUG模式: {'开启' if debug_mode else '关闭'}")
     logging.info("=" * 80)
     
-    # 从文件加载地址
-    addresses = load_addresses_from_file()
+    # 加载地址过滤器
+    address_filter = AddressFilter()
     
-    if not addresses:
-        logging.error("没有找到监控地址，退出...")
+    # 从文件加载地址信息
+    address_infos = load_addresses_from_file()
+    
+    if not address_infos:
+        logging.error("❌ 没有找到监控地址，退出...")
         exit(1)
     
-    logging.info(f"从文件加载了 {len(addresses)} 个地址")
+    logging.info(f"📊 从文件加载了 {len(address_infos)} 个地址")
+    
+    # 应用过滤规则
+    filtered_addresses = []
+    blocked_addresses = []
+    
+    for addr_info in address_infos:
+        address = addr_info['address']
+        display_name = addr_info.get('display_name')
+        blocked_in_file = addr_info.get('blocked', False)
+        
+        # 检查文件中的block标记
+        if blocked_in_file:
+            blocked_addresses.append({
+                'address': address,
+                'display_name': display_name,
+                'reason': '在地址文件中标记为blocked'
+            })
+            continue
+        
+        # 检查过滤器规则
+        is_blocked, reason = address_filter.is_blocked(address, display_name)
+        if is_blocked:
+            blocked_addresses.append({
+                'address': address,
+                'display_name': display_name,
+                'reason': reason
+            })
+            continue
+        
+        # 未被屏蔽，加入监控列表
+        filtered_addresses.append(address)
+    
+    # 输出过滤统计
+    logging.info("=" * 80)
+    logging.info("📋 地址过滤统计")
+    logging.info("=" * 80)
+    logging.info(f"✅ 有效地址: {len(filtered_addresses)} 个")
+    logging.info(f"🚫 屏蔽地址: {len(blocked_addresses)} 个")
+    
+    if blocked_addresses:
+        logging.info("\n🚫 已屏蔽的地址:")
+        for idx, blocked in enumerate(blocked_addresses, 1):
+            name_str = f" ({blocked['display_name']})" if blocked['display_name'] else ""
+            logging.info(f"   {idx}. {blocked['address']}{name_str}")
+            logging.info(f"      原因: {blocked['reason']}")
+    
+    logging.info("=" * 80)
+    
+    if not filtered_addresses:
+        logging.error("❌ 没有有效的监控地址（全部被过滤），退出...")
+        exit(1)
+    
+    logging.info(f"\n✅ 将监控 {len(filtered_addresses)} 个地址\n")
     
     # 创建并启动监控器
-    monitor = WhaleMonitor(addresses, config)
+    monitor = WhaleMonitor(filtered_addresses, config)
     monitor.start_monitoring()
 
