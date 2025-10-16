@@ -13,17 +13,28 @@ from pathlib import Path
 
 
 # 配置日志
-def setup_logging(log_file: str = None):
-    """设置日志"""
+def setup_logging(log_file: str = None, debug: bool = False):
+    """设置日志
+    
+    Args:
+        log_file: 日志文件路径
+        debug: 是否启用DEBUG级别日志
+    """
     handlers = [logging.StreamHandler()]
     if log_file:
         handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
     
+    log_level = logging.DEBUG if debug else logging.INFO
+    
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format='%(asctime)s | %(levelname)s | %(message)s',
-        handlers=handlers
+        handlers=handlers,
+        force=True  # 强制重新配置，即使已经配置过
     )
+    
+    if debug:
+        logging.info("DEBUG模式已启用")
 
 
 class Config:
@@ -66,7 +77,8 @@ class Config:
             "notification": {
                 "console": True,
                 "log_file": "trades.log"
-            }
+            },
+            "debug": False
         }
     
     def get(self, *keys, default=None):
@@ -89,7 +101,12 @@ class PositionTracker:
         self.positions: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
     
     def process_fill(self, user: str, fill_data: Dict) -> Optional[Dict]:
-        """处理fill事件并判断交易类型"""
+        """处理fill事件并判断交易类型
+        
+        根据 Hyperliquid API 文档:
+        - side 'B' = Bid (买入/做多)
+        - side 'A' = Ask (卖出/做空)
+        """
         coin = fill_data.get('coin')
         side = fill_data.get('side')
         size = float(fill_data.get('sz', 0))
@@ -97,6 +114,7 @@ class PositionTracker:
         closed_pnl = float(fill_data.get('closedPnl', 0))
         
         # 计算仓位变化
+        # 'B' (Bid/买入) = 增加做多仓位, 'A' (Ask/卖出) = 减少仓位(或增加做空)
         delta = size if side == 'B' else -size
         
         old_position = self.positions[user][coin]
@@ -112,11 +130,19 @@ class PositionTracker:
         if not self._should_notify(action_type, size):
             return None
         
+        # 判断交易方向的文字描述
+        if side == 'B':
+            side_text = '买入 (Bid)'
+        elif side == 'A':
+            side_text = '卖出 (Ask)'
+        else:
+            side_text = f'未知 ({side})'
+        
         return {
             'user': user,
             'coin': coin,
             'action': action_type,
-            'side': '买入' if side == 'B' else '卖出',
+            'side': side_text,
             'size': size,
             'price': price,
             'old_position': old_position,
@@ -187,14 +213,71 @@ class WhaleMonitor:
         try:
             from hyperliquid.info import Info
             from hyperliquid.utils import constants
-            self.info = Info(constants.MAINNET_API_URL, skip_ws=False)
+            self.Info = Info
+            self.constants = constants
             self.sdk_available = True
+            logging.debug("SDK导入成功")
         except ImportError:
             logging.error("未找到 hyperliquid-python-sdk")
             logging.error("请运行: pip3 install hyperliquid-python-sdk")
             self.sdk_available = False
         
+        # 为每个用户创建独立的Info实例（解决多用户订阅问题）
+        self.info_instances = {}
+        
+        # 资产名称缓存 {asset_id: coin_name}
+        self.asset_name_cache = {}
+        
         logging.info(f"监控器初始化完成，监控 {len(self.addresses)} 个地址")
+    
+    def _get_coin_name(self, coin_id: str) -> str:
+        """获取币种名称
+        
+        Args:
+            coin_id: 币种ID，可能是 '@107' 这样的资产ID或直接的币种名称
+        
+        Returns:
+            币种名称
+        """
+        # 如果不是以@开头，说明已经是币种名称
+        if not coin_id.startswith('@'):
+            return coin_id
+        
+        # 检查缓存
+        if coin_id in self.asset_name_cache:
+            return self.asset_name_cache[coin_id]
+        
+        # 尝试通过API获取资产信息
+        try:
+            if hasattr(self, 'Info') and self.info_instances:
+                # 使用任意一个info实例获取元数据
+                info = list(self.info_instances.values())[0]
+                meta = info.meta()
+                
+                # 查找资产ID对应的币种名称
+                asset_id = int(coin_id[1:])  # 去掉@符号并转为整数
+                
+                # 在universe中查找
+                if 'universe' in meta:
+                    for asset in meta['universe']:
+                        if asset.get('index') == asset_id or asset.get('name') == coin_id:
+                            coin_name = asset.get('name', coin_id)
+                            self.asset_name_cache[coin_id] = coin_name
+                            return coin_name
+                
+                # 在spot元数据中查找
+                spot_meta = info.spot_meta()
+                if 'universe' in spot_meta:
+                    for asset in spot_meta['universe']:
+                        if asset.get('index') == asset_id:
+                            coin_name = asset.get('name', coin_id)
+                            self.asset_name_cache[coin_id] = coin_name
+                            return coin_name
+        except Exception as e:
+            logging.debug(f"获取资产名称失败: {e}")
+        
+        # 如果无法获取，返回原始ID
+        return coin_id
     
     def start_monitoring(self):
         """开始监控"""
@@ -213,26 +296,61 @@ class WhaleMonitor:
         print("正在订阅用户事件...")
         print(f"{'='*80}\n")
         
-        # 订阅每个地址的用户事件
+        # WebSocket连接状态检查
+        logging.debug(f"准备为 {len(self.addresses)} 个地址创建独立连接...")
+        
+        # 为每个地址创建独立的Info实例并订阅
         success_count = 0
-        for address in self.addresses:
+        failed_addresses = []
+        
+        for idx, address in enumerate(self.addresses, 1):
+            logging.debug(f"[{idx}/{len(self.addresses)}] 准备订阅地址: {address}")
+            
             try:
-                self.info.subscribe(
-                    {"type": "userEvents", "user": address},
+                # 为每个用户创建独立的WebSocket连接
+                logging.debug(f"创建独立的Info实例...")
+                info = self.Info(self.constants.MAINNET_API_URL, skip_ws=False)
+                
+                # 保存Info实例
+                self.info_instances[address] = info
+                
+                # 创建订阅配置
+                subscription = {"type": "userEvents", "user": address}
+                logging.debug(f"订阅配置: {subscription}")
+                
+                # 执行订阅
+                info.subscribe(
+                    subscription,
                     lambda data, addr=address: self._handle_user_event(addr, data)
                 )
-                logging.info(f"✅ 已订阅: {address}")
+                
+                logging.info(f"✅ 已订阅 [{idx}/{len(self.addresses)}]: {address}")
                 success_count += 1
+                
+                # 添加短暂延迟，避免连接创建过快
+                time.sleep(0.2)
+                
             except Exception as e:
-                logging.error(f"❌ 订阅失败 {address}: {e}")
+                error_msg = str(e)
+                logging.error(f"❌ 订阅失败 [{idx}/{len(self.addresses)}] {address}: {error_msg}")
+                logging.debug(f"详细错误信息: ", exc_info=True)
+                failed_addresses.append(address)
+        
+        # 输出订阅总结
+        print(f"\n{'='*80}")
+        print(f"📊 订阅总结")
+        print(f"{'='*80}")
+        print(f"✅ 成功: {success_count}/{len(self.addresses)}")
+        if failed_addresses:
+            print(f"❌ 失败: {len(failed_addresses)}/{len(self.addresses)}")
+            logging.warning(f"失败地址列表: {failed_addresses}")
+        print(f"{'='*80}\n")
         
         if success_count == 0:
             logging.error("没有成功订阅任何地址，退出...")
             return
         
-        print(f"\n{'='*80}")
-        print(f"🎯 监控中... 成功订阅 {success_count}/{len(self.addresses)} 个地址")
-        print(f"{'='*80}\n")
+        print(f"🎯 监控中... (按Ctrl+C停止)\n")
         
         # 保持运行
         try:
@@ -243,54 +361,109 @@ class WhaleMonitor:
     
     def _handle_user_event(self, user: str, event_data: Dict):
         """处理用户事件"""
+        logging.debug(f"📨 收到用户事件 - 用户: {user}")
+        logging.debug(f"📋 事件数据结构: {list(event_data.keys()) if event_data else 'None'}")
+        
         if not event_data or 'data' not in event_data:
+            logging.debug("⚠️  事件数据为空或缺少'data'字段，跳过")
             return
         
         data = event_data['data']
+        logging.debug(f"📦 数据内容类型: {list(data.keys()) if isinstance(data, dict) else type(data)}")
         
         # 处理fills事件（成交事件）
         if 'fills' in data:
             fills = data['fills']
-            for fill in fills:
+            logging.debug(f"✅ 收到 {len(fills)} 个fill事件")
+            
+            for idx, fill in enumerate(fills, 1):
+                coin_raw = fill.get('coin')
+                side = fill.get('side')
+                size = fill.get('sz')
+                
+                # 转换side显示
+                side_display = '买入(B)' if side == 'B' else '卖出(A)' if side == 'A' else side
+                
+                logging.debug(
+                    f"🔍 处理第 {idx}/{len(fills)} 个fill - "
+                    f"币种: {coin_raw}, 方向: {side_display}, 数量: {size}"
+                )
+                
                 trade_info = self.tracker.process_fill(user, fill)
                 if trade_info:
+                    logging.debug(f"✨ 交易信息已生成: {trade_info['action']}")
                     self._notify_trade(trade_info)
+                else:
+                    logging.debug(f"🔇 交易不满足通知条件，已过滤")
+        else:
+            logging.debug(f"ℹ️  事件中没有fills数据，可能是其他类型事件")
     
     def _notify_trade(self, trade_info: Dict):
         """通知交易事件"""
         action = trade_info['action']
         
+        # 获取币种名称（转换@ID格式）
+        coin_name = self._get_coin_name(trade_info['coin'])
+        
         # 控制台输出
         if self.config.get('notification', 'console', default=True):
-            symbol = {
+            # 行为符号
+            action_symbols = {
                 '开仓': '🟢',
                 '平仓': '🔴',
                 '反向开仓': '🔄',
                 '加仓': '⬆️',
                 '减仓': '⬇️'
-            }.get(action, '📊')
+            }
+            symbol = action_symbols.get(action, '📊')
             
-            print(f"{symbol} {action} | {trade_info['timestamp']}")
-            print(f"   用户: {trade_info['user'][:10]}...{trade_info['user'][-8:]}")
-            print(f"   币种: {trade_info['coin']}")
-            print(f"   方向: {trade_info['side']}")
-            print(f"   数量: {trade_info['size']}")
-            print(f"   价格: ${trade_info['price']:,.2f}")
-            print(f"   仓位: {trade_info['old_position']:.4f} → {trade_info['new_position']:.4f}")
+            # 分隔线
+            print(f"\n{'━' * 80}")
             
+            # 标题行 - 更醒目
+            print(f"{symbol}  {action.upper()}  {symbol}")
+            print(f"{'━' * 80}")
+            
+            # 时间戳
+            timestamp = trade_info['timestamp'].replace('T', ' ')
+            print(f"⏰ 时间: {timestamp}")
+            
+            # 用户地址 - 显示完整地址
+            user_addr = trade_info['user']
+            print(f"👤 用户: {user_addr}")
+            
+            # 交易详情
+            print(f"{'─' * 80}")
+            print(f"💎 币种: {coin_name}")
+            print(f"📊 方向: {trade_info['side']}")
+            print(f"📈 数量: {trade_info['size']:,.4f}")
+            print(f"💵 价格: ${trade_info['price']:,.4f}")
+            
+            # 仓位变化
+            old_pos = trade_info['old_position']
+            new_pos = trade_info['new_position']
+            pos_change = new_pos - old_pos
+            pos_arrow = "📈" if pos_change > 0 else "📉"
+            print(f"{pos_arrow} 仓位: {old_pos:,.4f} → {new_pos:,.4f} (变化: {pos_change:+,.4f})")
+            
+            # 已实现盈亏
             if abs(trade_info['closed_pnl']) > 0.01:
-                pnl_symbol = '💰' if trade_info['closed_pnl'] > 0 else '📉'
-                print(f"   {pnl_symbol} 已实现盈亏: ${trade_info['closed_pnl']:,.2f}")
+                pnl = trade_info['closed_pnl']
+                pnl_symbol = '💰' if pnl > 0 else '💸'
+                pnl_status = '盈利' if pnl > 0 else '亏损'
+                print(f"{pnl_symbol} 已实现盈亏: ${pnl:,.2f} ({pnl_status})")
             
-            print()
+            # 底部分隔线
+            print(f"{'━' * 80}\n")
         
         # 日志记录
         log_file = self.config.get('notification', 'log_file')
         if log_file:
             logging.info(
-                f"{action} | {trade_info['user']} | {trade_info['coin']} | "
-                f"{trade_info['side']} {trade_info['size']} @ ${trade_info['price']:.2f} | "
-                f"PnL: ${trade_info['closed_pnl']:.2f}"
+                f"{action} | {trade_info['user']} | {coin_name} | "
+                f"{trade_info['side']} {trade_info['size']:,.4f} @ ${trade_info['price']:,.4f} | "
+                f"仓位: {trade_info['old_position']:,.4f} → {trade_info['new_position']:,.4f} | "
+                f"PnL: ${trade_info['closed_pnl']:,.2f}"
             )
 
 
@@ -312,7 +485,16 @@ if __name__ == "__main__":
     
     # 设置日志
     log_file = config.get('notification', 'log_file')
-    setup_logging(log_file)
+    debug_mode = config.get('debug', default=False)
+    setup_logging(log_file, debug=debug_mode)
+    
+    logging.info("=" * 80)
+    logging.info("Hyperliquid 大户监控器 V2")
+    logging.info("=" * 80)
+    logging.info(f"配置文件: config.json")
+    logging.info(f"日志文件: {log_file if log_file else '无'}")
+    logging.info(f"DEBUG模式: {'开启' if debug_mode else '关闭'}")
+    logging.info("=" * 80)
     
     # 从文件加载地址
     addresses = load_addresses_from_file()
@@ -320,6 +502,8 @@ if __name__ == "__main__":
     if not addresses:
         logging.error("没有找到监控地址，退出...")
         exit(1)
+    
+    logging.info(f"从文件加载了 {len(addresses)} 个地址")
     
     # 创建并启动监控器
     monitor = WhaleMonitor(addresses, config)

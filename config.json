@@ -27,6 +27,7 @@
       "bot_token": "",
       "chat_id": ""
     }
-  }
+  },
+  "debug": false
 }
 
