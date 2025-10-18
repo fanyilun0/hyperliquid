@@ -538,13 +538,11 @@ class WhaleMonitor:
             print(f"\n{'━' * 80}")
             
             # 标题行 - 更醒目
-            print(f"{symbol}  {action.upper()}  {symbol}")
+            print(f"{symbol}  {action.upper()}")
             
             # 添加原始方向字段（如果有）
             if trade_info.get('dir_field'):
                 print(f"    ({trade_info['dir_field']})")
-            
-            print(f"{'━' * 80}")
             
             # 时间戳
             timestamp = trade_info['timestamp'].replace('T', ' ')
@@ -555,7 +553,6 @@ class WhaleMonitor:
             print(f"👤 用户: {user_addr}")
             
             # 交易详情
-            print(f"{'─' * 80}")
             print(f"💎 币种: {coin_name}")
             print(f"📊 方向: {trade_info['side']}")
             print(f"📈 数量: {trade_info['size']:,.4f}")
@@ -572,9 +569,6 @@ class WhaleMonitor:
             if trade_info.get('entry_px', 0) > 0:
                 entry_px = trade_info['entry_px']
                 print(f"🎯 入场价: ${entry_px:,.4f}")
-            
-            # 盈亏信息
-            print(f"{'─' * 80}")
             
             # 已实现盈亏
             closed_pnl = trade_info.get('closed_pnl', 0)

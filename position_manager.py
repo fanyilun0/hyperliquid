@@ -417,19 +417,19 @@ class PositionManager:
             html_table = self.generate_position_table_html(address, positions)
             html_tables.append(html_table)
             
-            # 日志输出
-            if positions:
-                logging.info(f"   ✅ 发现 {len(positions)} 个持仓")
-                for pos in positions[:3]:
-                    logging.info(
-                        f"      • {pos['coin']}: {pos['direction']} {pos['size']:.4f} | "
-                        f"价值: ${pos['position_value']:,.2f} | "
-                        f"PnL: ${pos['unrealized_pnl']:,.2f}"
-                    )
-                if len(positions) > 3:
-                    logging.info(f"      ... 还有 {len(positions) - 3} 个持仓")
-            else:
-                logging.info(f"   ℹ️  无持仓")
+            # # 日志输出
+            # if positions:
+            #     logging.info(f"   ✅ 发现 {len(positions)} 个持仓")
+            #     for pos in positions[:3]:
+            #         logging.info(
+            #             f"      • {pos['coin']}: {pos['direction']} {pos['size']:.4f} | "
+            #             f"价值: ${pos['position_value']:,.2f} | "
+            #             f"PnL: ${pos['unrealized_pnl']:,.2f}"
+            #         )
+            #     if len(positions) > 3:
+            #         logging.info(f"      ... 还有 {len(positions) - 3} 个持仓")
+            # else:
+            #     logging.info(f"   ℹ️  无持仓")
         
         # 计算统计数据
         total_addresses = len(addresses)
