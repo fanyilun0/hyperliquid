@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-从leaderboard.json中提取正收益前10名交易者的地址
+从jsons/leaderboard.json中提取正收益前10名交易者的地址
 """
 import json
 from typing import List, Dict, Any
 
 
-def load_leaderboard(file_path: str = "leaderboard.json") -> List[Dict[str, Any]]:
+def load_leaderboard(file_path: str = "jsons/leaderboard.json") -> List[Dict[str, Any]]:
     """加载leaderboard数据"""
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -85,14 +85,14 @@ def get_top_traders(top_n: int = 10, time_window: str = "allTime") -> List[str]:
     
     # 保存地址列表到文件
     addresses = [trader['ethAddress'] for trader in top_traders]
-    with open('top_traders_addresses.json', 'w', encoding='utf-8') as f:
+    with open('jsons/top_traders_addresses.json', 'w', encoding='utf-8') as f:
         json.dump({
             'time_window': time_window,
             'addresses': addresses,
             'details': top_traders
         }, f, indent=2, ensure_ascii=False)
     
-    print(f"地址列表已保存到: top_traders_addresses.json")
+    print(f"地址列表已保存到: jsons/top_traders_addresses.json")
     
     return addresses
 

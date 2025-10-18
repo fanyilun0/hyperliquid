@@ -157,7 +157,7 @@ def demo_config_options():
     print("  - 'month': 本月收益")
     print("  - 'allTime': 历史总收益 (推荐)")
     
-    print("\n监控配置 (config.json):")
+    print("\n监控配置 (jsons/config.json):")
     print("-" * 60)
     print("• notify_on_open: 开仓时通知 (默认: true)")
     print("• notify_on_close: 平仓时通知 (默认: true)")
@@ -197,9 +197,9 @@ def main():
         print()
         
     except FileNotFoundError:
-        print("\n⚠️  未找到 leaderboard.json 文件")
+        print("\n⚠️  未找到 jsons/leaderboard.json 文件")
         print("请先下载排行榜数据:")
-        print("curl -o leaderboard.json https://stats-data.hyperliquid.xyz/Mainnet/leaderboard")
+        print("curl -o jsons/leaderboard.json https://stats-data.hyperliquid.xyz/Mainnet/leaderboard")
         print()
 
 

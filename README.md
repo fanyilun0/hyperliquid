@@ -1,181 +1,164 @@
-# Hyperliquid 大户交易监控系统
+# Hyperliquid 大户监控器 V2.2
 
-基于Hyperliquid官方API和Python SDK的实时大户交易监控工具。
+> 监控 Hyperliquid 交易所大户交易活动，自动生成 HTML 持仓报告
 
-## 功能特性
+## 🎯 V2.2 新特性 (2025-10-18)
 
-- ✅ 自动从leaderboard中筛选正收益前10名交易者
-- ✅ 实时监控大户的开仓、平仓、加仓、减仓行为
-- ✅ 准确追踪每个地址的持仓状态
-- ✅ 自动计算已实现盈亏
-- ✅ 支持多个时间窗口筛选（日/周/月/全时）
+✅ **修复日志文件生成错误** - 解决 `IsADirectoryError`  
+✅ **独立持仓管理模块** - 拆离 `position_manager.py`  
+✅ **HTML 持仓报告** - 自动生成美观的 `logs/positions.log`  
 
-## 系统架构
-
-```
-┌─────────────────────┐
-│  leaderboard.json   │  ← Hyperliquid排行榜数据
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│ filter_top_traders  │  ← 筛选正收益前10名
-│       .py           │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│ top_traders_        │  ← 存储筛选结果
-│  addresses.json     │
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  monitor_whales.py  │  ← 实时监控交易
-└─────────────────────┘
-           │
-           ▼
-   实时交易通知 🔔
-```
-
-## 快速开始
-
-### 1. 安装依赖
+## 🚀 快速开始
 
 ```bash
-pip install -r requirements.txt
+# 1. 运行监控
+python3 monitor_whales_v2.py
+
+# 2. 查看持仓报告
+open logs/positions.log
+
+# 3. 查看交易日志
+tail -f logs/20251018_*.log
 ```
 
-### 2. 筛选大户地址
+## 📊 HTML 持仓报告
+
+### 表格字段
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| 代币 | 币种 | HYPE, BTC |
+| 方向 | Long/Short | 🟢 Long, 🔴 Short |
+| 杠杆 | 倍数 | 10x |
+| 价值 | 美元 | $3,571.77 |
+| 数量 | 仓位 | 100.5000 |
+| 开仓价格 | 入场价 | $35.5450 |
+| 盈亏(PnL) | 未实现 | 🟢 +$125.50 |
+| 资金费 | 累计 | 🔴 -$12.34 |
+| 爆仓价格 | 清算价 | $32.0000 |
+
+### 颜色标识
+
+- 🟢 **绿色** = 做多 / 盈利
+- 🔴 **红色** = 做空 / 亏损
+- ⚪ **灰色** = 中性
+
+## 📁 项目结构
+
+```
+hyperliquid/
+├── monitor_whales_v2.py          # 主程序
+├── position_manager.py           # 持仓管理器（新）
+├── config.json                   # 配置文件
+├── top_traders_addresses.json    # 监控地址
+├── logs/
+│   ├── positions.log            # HTML 持仓报告（自动生成）
+│   └── YYYYMMDD_HHMMSS.log     # 交易日志
+└── 文档/
+    ├── 快速使用指南_V2.2.md      # ⭐ 推荐阅读
+    ├── POSITION_MANAGER_README.md # API 文档
+    └── 改进总结_V2.2.md          # 改进详情
+```
+
+## ⚙️ 配置
+
+`config.json` - 无需修改，开箱即用：
+
+```json
+{
+  "monitor": {
+    "max_addresses": 20,
+    "notify_on_open": true,
+    "notify_on_close": true,
+    "min_position_size": 0
+  },
+  "notification": {
+    "log_file": "logs/"  // 自动生成时间戳日志
+  },
+  "debug": true
+}
+```
+
+## 🧪 测试验证
 
 ```bash
-python filter_top_traders.py
+# 运行验证脚本
+python3 verify_fixes.py
+
+# 预期输出
+🎉 所有检查通过！系统已就绪。
 ```
 
-这将：
-- 读取 `leaderboard.json` 文件
-- 筛选出正收益前10名交易者
-- 将结果保存到 `top_traders_addresses.json`
-- 在控制台显示详细信息
+## 📚 文档
 
-### 3. 开始监控
-
-```bash
-python monitor_whales.py
-```
-
-这将：
-- 加载筛选出的地址列表
-- 订阅这些地址的实时交易事件
-- 在控制台显示开仓、平仓等关键交易行为
-
-## 使用示例
-
-### 选择不同的时间窗口
-
-编辑 `filter_top_traders.py`，修改时间窗口参数：
-
-```python
-# 可选值: 'day', 'week', 'month', 'allTime'
-addresses = get_top_traders(top_n=10, time_window="month")
-```
-
-### 输出示例
-
-```
-================================================================================
-正收益前10名交易者 (时间窗口: allTime)
-================================================================================
-
-排名 #1
-  地址: 0x1234567890abcdef...
-  账户价值: $1,234,567.89
-  盈亏 (PnL): $567,890.12
-  收益率 (ROI): 45.67%
-  交易量: $12,345,678.90
-
-...
-
-================================================================================
-监控中... (按Ctrl+C停止)
-================================================================================
-
-🟢 开仓 | 2025-10-15T14:30:25.123456
-   用户: 0x12345678...abcdef12
-   币种: BTC
-   方向: 买入
-   数量: 1.5
-   价格: $67,890.00
-   仓位: 0.0000 → 1.5000
-```
-
-## 核心逻辑说明
-
-### 仓位状态机
-
-程序通过维护本地仓位状态，将WebSocket推送的增量数据转换为业务事件：
-
-| 原仓位 | 新仓位 | 判定 |
-|--------|--------|------|
-| 0 | ≠0 | 开仓 |
-| ≠0 | 0 | 平仓 |
-| 正 | 负 (或反之) | 反向开仓 |
-| 仓位增大 | - | 加仓 |
-| 仓位减小 | - | 减仓 |
-
-### API限制说明
-
-⚠️ **重要**: Hyperliquid限制每个IP地址最多监控10个用户的userEvents
-
-如需监控超过10个地址，需要：
-- 使用代理服务器池分散IP
-- 部署到多个服务器实例
-- 实现分布式架构
-
-## 文件说明
-
-| 文件 | 说明 |
+| 文档 | 说明 |
 |------|------|
-| `filter_top_traders.py` | 从leaderboard筛选大户地址 |
-| `monitor_whales.py` | 实时监控交易活动 |
-| `leaderboard.json` | 排行榜原始数据（从API获取） |
-| `top_traders_addresses.json` | 筛选后的地址列表（自动生成） |
-| `requirements.txt` | Python依赖包 |
-| `guide.md` | 技术方案文档 |
+| **快速使用指南_V2.2.md** | ⭐ 快速开始 |
+| **POSITION_MANAGER_README.md** | API 详细说明 |
+| **改进总结_V2.2.md** | 技术实现 |
+| **FINAL_SUMMARY.md** | 完成总结 |
 
-## 数据更新
+## 🔧 常见问题
 
-### 更新排行榜数据
-
+### Q: 日志文件错误？
 ```bash
-# 从Hyperliquid API获取最新排行榜
-curl -o leaderboard.json https://stats-data.hyperliquid.xyz/Mainnet/leaderboard
+# 确认 logs 是目录
+ls -ld logs/
 ```
 
-建议设置定时任务（如cron）每小时更新一次排行榜数据。
+### Q: positions.log 是空的？
+```bash
+# 查看日志
+grep "持仓信息已保存" logs/20251018_*.log
+```
 
-## 扩展功能
+### Q: 如何验证系统？
+```bash
+python3 verify_fixes.py
+```
 
-可以在 `monitor_whales.py` 中添加更多功能：
+## 📈 功能特性
 
-- 💬 集成Telegram/Discord通知
-- 📊 记录交易历史到数据库
-- 📈 计算跟单收益统计
-- 🎯 设置仓位变化阈值过滤
-- 📧 邮件/短信告警
+- ✅ 实时监控大户交易
+- ✅ 自动获取持仓信息
+- ✅ 生成 HTML 持仓报告
+- ✅ 暗色主题 + 颜色标识
+- ✅ 完整的 9 个字段
+- ✅ 响应式布局设计
+- ✅ 模块化代码结构
 
-## 技术参考
+## ⚠️ 注意事项
 
-详细技术方案请参阅 [guide.md](guide.md)
+1. **持仓数据** - 启动时的快照，不自动刷新
+2. **HTML 文件** - 每次运行覆盖 `positions.log`
+3. **API 限制** - 建议监控 ≤ 20 个地址
+4. **浏览器** - 使用现代浏览器打开 HTML
 
-## 注意事项
+## 🎯 下一步
 
-1. 确保网络连接稳定，WebSocket需要持续连接
-2. 排行榜数据是快照，非实时更新（通常分钟级）
-3. 监控程序需要持续运行，建议使用 `screen` 或 `tmux`
-4. 注意API速率限制，避免频繁请求
+```bash
+# 1. 运行程序
+python3 monitor_whales_v2.py
 
-## 许可证
+# 2. 查看报告
+open logs/positions.log
 
-MIT License
+# 3. 实时监控
+tail -f logs/*.log
+```
+
+## 📞 获取帮助
+
+1. 查看 **快速使用指南_V2.2.md**
+2. 运行 `python3 verify_fixes.py`
+3. 查看日志 `tail -50 logs/*.log`
+4. 参考 [Hyperliquid API 文档](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint)
+
+---
+
+**版本**: V2.2  
+**日期**: 2025-10-18  
+**状态**: ✅ 生产就绪
+
+**祝交易监控顺利！** 🚀
 

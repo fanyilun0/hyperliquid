@@ -6,14 +6,14 @@
     "comment": "时间窗口可选: day, week, month, allTime"
   },
   "monitor": {
-    "max_addresses": 10,
+    "max_addresses": 20,
     "notify_on_open": true,
     "notify_on_close": true,
     "notify_on_reverse": true,
     "notify_on_add": false,
     "notify_on_reduce": false,
     "min_position_size": 0,
-    "comment": "min_position_size: 最小通知仓位大小，0表示所有交易都通知"
+    "comment": "min_position_size: 最小通知仓位大小，设置为0表示所有交易都通知（不过滤），大于0时才会过滤小于该值的交易"
   },
   "api": {
     "leaderboard_url": "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard",
@@ -21,13 +21,14 @@
   },
   "notification": {
     "console": true,
-    "log_file": "trades.log",
+    "log_file": "logs/",
+    "comment": "日志文件会自动保存到logs/目录，使用时间戳命名，格式: logs/YYYYMMDD_HHMMSS.log",
     "telegram": {
       "enabled": false,
       "bot_token": "",
       "chat_id": ""
     }
   },
-  "debug": false
+  "debug": true
 }
 

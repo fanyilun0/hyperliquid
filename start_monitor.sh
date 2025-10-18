@@ -6,7 +6,7 @@ echo "================================================"
 echo ""
 
 # 检查地址文件是否存在
-if [ ! -f "top_traders_addresses.json" ]; then
+if [ ! -f "jsons/top_traders_addresses.json" ]; then
     echo "⚠️  未找到地址列表文件，正在筛选..."
     python3 filter_top_traders.py
     echo ""

@@ -3,7 +3,7 @@
 """
 从 Coinglass 获取 Hyperliquid 活跃交易地址
 访问页面: https://www.coinglass.com/zh/hl/range/9
-将地址保存到 evm_address.json 文件
+将地址保存到 jsons/evm_address.json 文件
 """
 
 from selenium import webdriver
@@ -94,7 +94,7 @@ def get_coinglass_addresses():
                 print(f"  {i}. {addr}")
 
         # 将地址列表保存为 JSON 文件
-        output_file = "evm_address.json"
+        output_file = "jsons/evm_address.json"
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(addresses, f, ensure_ascii=False, indent=2)
 
