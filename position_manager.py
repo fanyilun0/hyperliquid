@@ -76,8 +76,10 @@ class PositionManager:
             leverage = pos.get('leverage', {})
             leverage_value = float(leverage.get('value', 0)) if isinstance(leverage, dict) else 0
             
-            # 资金费
-            cumulative_funding = float(pos.get('cumFunding', {}).get('allTime', 0))
+            # 资金费 (cumFunding: 正值=支付/亏损, 负值=收到/盈利)
+            # 为了统一显示，转换为：正值=盈利，负值=亏损
+            cumulative_funding_raw = float(pos.get('cumFunding', {}).get('allTime', 0))
+            cumulative_funding = -cumulative_funding_raw  # 反转符号
             
             # 爆仓价格
             liquidation_px = float(pos.get('liquidationPx', 0)) if pos.get('liquidationPx') else 0
@@ -371,6 +373,20 @@ class PositionManager:
                 <div class="stat-label">总持仓数</div>
                 <div class="stat-value">{total_positions}</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-label">做多持仓</div>
+                <div class="stat-value" style="color: #52c41a;">{long_count} 个 (${long_value:,.0f})</div>
+                <div style="color: #a8b3cf; font-size: 12px; margin-top: 5px;">{long_percentage:.1f}%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">做空持仓</div>
+                <div class="stat-value" style="color: #ff4d4f;">{short_count} 个 (${short_value:,.0f})</div>
+                <div style="color: #a8b3cf; font-size: 12px; margin-top: 5px;">{short_percentage:.1f}%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">多空比 (Long/Short)</div>
+                <div class="stat-value">{long_short_ratio_display}</div>
+            </div>
         </div>
     </div>
 """
@@ -421,12 +437,56 @@ class PositionManager:
         total_positions = sum(len(pos_list) for pos_list in all_positions.values())
         generation_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
+        # 计算多空持仓统计
+        long_value = 0  # 做多总价值
+        short_value = 0  # 做空总价值
+        long_count = 0  # 做多持仓数
+        short_count = 0  # 做空持仓数
+        
+        for pos_list in all_positions.values():
+            for pos in pos_list:
+                if pos['raw_szi'] > 0:  # 做多
+                    long_value += pos['position_value']
+                    long_count += 1
+                elif pos['raw_szi'] < 0:  # 做空
+                    short_value += pos['position_value']
+                    short_count += 1
+        
+        # 计算多空比
+        long_short_ratio = long_value / short_value if short_value > 0 else float('inf')
+        long_percentage = (long_value / (long_value + short_value) * 100) if (long_value + short_value) > 0 else 0
+        short_percentage = (short_value / (long_value + short_value) * 100) if (long_value + short_value) > 0 else 0
+        
+        # 格式化多空比显示
+        if long_short_ratio == float('inf'):
+            long_short_ratio_display = "∞ (仅做多)"
+        elif long_short_ratio == 0:
+            long_short_ratio_display = "0 (仅做空)"
+        else:
+            long_short_ratio_display = f"{long_short_ratio:.2f}"
+        
+        # 日志输出多空比统计
+        logging.info("=" * 80)
+        logging.info("📊 多空持仓统计")
+        logging.info("=" * 80)
+        logging.info(f"🟢 做多: {long_count} 个持仓, 总价值: ${long_value:,.2f} ({long_percentage:.1f}%)")
+        logging.info(f"🔴 做空: {short_count} 个持仓, 总价值: ${short_value:,.2f} ({short_percentage:.1f}%)")
+        logging.info(f"📈 多空比: {long_short_ratio_display}")
+        logging.info("=" * 80)
+        
         # 替换占位符
         html_header = html_header.format(
             generation_time=generation_time,
             total_addresses=total_addresses,
             addresses_with_positions=addresses_with_positions,
-            total_positions=total_positions
+            total_positions=total_positions,
+            long_count=long_count,
+            long_value=long_value,
+            long_percentage=long_percentage,
+            short_count=short_count,
+            short_value=short_value,
+            short_percentage=short_percentage,
+            long_short_ratio_display=long_short_ratio_display
         )
         
         # 写入HTML文件

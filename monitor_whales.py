@@ -90,8 +90,8 @@ class Config:
                 "notify_on_open": True,
                 "notify_on_close": True,
                 "notify_on_reverse": True,
-                "notify_on_add": False,
-                "notify_on_reduce": False,
+                "notify_on_add": True,
+                "notify_on_reduce": True,
                 "min_position_size": 0
             },
             "notification": {
