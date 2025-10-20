@@ -12,8 +12,19 @@
     "notify_on_reverse": true,
     "notify_on_add": true,
     "notify_on_reduce": true,
+    "min_trade_value": 5000,
     "min_position_size": 0,
-    "comment": "min_position_size: 最小通知仓位大小，设置为0表示所有交易都通知（不过滤），大于0时才会过滤小于该值的交易; notify_on_add/reduce: 是否通知加仓/减仓操作"
+    "comment": "min_trade_value: 最小交易价值(USD)，优先使用，基于价格×数量计算; min_position_size: 已弃用，仅在未设置min_trade_value时使用; 设置为0表示所有交易都通知; notify_on_add/reduce: 是否通知加仓/减仓操作"
+  },
+  "websocket": {
+    "reconnect_delay": 5,
+    "max_reconnect_delay": 60,
+    "comment": "reconnect_delay: 初始重连延迟(秒), max_reconnect_delay: 最大重连延迟(秒), 使用指数退避策略"
+  },
+  "polling": {
+    "interval": 30,
+    "enable_html_report": true,
+    "comment": "interval: 轮询间隔(秒), enable_html_report: 是否定期生成HTML持仓报告"
   },
   "api": {
     "leaderboard_url": "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard",

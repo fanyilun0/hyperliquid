@@ -1,115 +1,22 @@
 #!/usr/bin/env python3
 """
-监控Hyperliquid大户交易活动 V2
-支持配置文件、日志记录等高级功能
+监控Hyperliquid大户交易活动 V2 (WebSocket模式)
+支持配置文件、日志记录、自动重连等高级功能
 """
 import json
 import time
 import logging
 import os
+import asyncio
 from typing import Dict, List, Optional
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+# 导入共享工具模块
+from monitor_utils import Config, AddressFilter, load_addresses_from_file, filter_addresses, setup_logging
 # 导入持仓管理器
 from position_manager import PositionManager
-
-
-# 配置日志
-def setup_logging(log_file: str = None, debug: bool = False):
-    """设置日志
-    
-    Args:
-        log_file: 日志文件路径（如果为空，自动生成到logs目录）
-        debug: 是否启用DEBUG级别日志
-    
-    Returns:
-        实际使用的日志文件路径
-    """
-    handlers = [logging.StreamHandler()]
-    
-    # 如果没有指定日志文件，使用时间戳生成
-    if not log_file:
-        logs_dir = Path("logs")
-        logs_dir.mkdir(exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = str(logs_dir / f"{timestamp}.log")
-    else:
-        # 如果指定了日志文件，确保目录存在
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
-    
-    log_level = logging.DEBUG if debug else logging.INFO
-    
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s | %(levelname)s | %(message)s',
-        handlers=handlers,
-        force=True  # 强制重新配置，即使已经配置过
-    )
-    
-    if debug:
-        logging.info("DEBUG模式已启用")
-    
-    return log_file
-
-
-class Config:
-    """配置管理器"""
-    
-    def __init__(self, config_file: str = "jsons/config.json"):
-        self.config_file = config_file
-        self.config = self.load_config()
-    
-    def load_config(self) -> dict:
-        """加载配置文件"""
-        if not Path(self.config_file).exists():
-            logging.warning(f"配置文件 {self.config_file} 不存在，使用默认配置")
-            return self.get_default_config()
-        
-        try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logging.error(f"加载配置文件失败: {e}")
-            return self.get_default_config()
-    
-    @staticmethod
-    def get_default_config() -> dict:
-        """默认配置"""
-        return {
-            "filter": {
-                "top_n": 10,
-                "time_window": "allTime"
-            },
-            "monitor": {
-                "max_addresses": 10,
-                "notify_on_open": True,
-                "notify_on_close": True,
-                "notify_on_reverse": True,
-                "notify_on_add": True,
-                "notify_on_reduce": True,
-                "min_position_size": 0
-            },
-            "notification": {
-                "console": True,
-                "log_file": "trades.log"
-            },
-            "debug": False
-        }
-    
-    def get(self, *keys, default=None):
-        """获取配置值"""
-        value = self.config
-        for key in keys:
-            if isinstance(value, dict):
-                value = value.get(key, default)
-            else:
-                return default
-        return value
 
 
 class PositionTracker:
@@ -198,8 +105,11 @@ class PositionTracker:
         # 判断交易类型
         action_type = self._identify_action(old_position, new_position)
         
-        # 检查是否需要通知
-        if not self._should_notify(action_type, size):
+        # 计算单笔交易的名义价值 (Notional Value = 价格 × 数量)
+        trade_value = price * size
+        
+        # 检查是否需要通知（传入交易价值而不是仓位大小）
+        if not self._should_notify(action_type, size, trade_value):
             return None
         
         # 判断交易方向的文字描述
@@ -222,6 +132,7 @@ class PositionTracker:
             'side': side_text,
             'size': size,
             'price': price,
+            'trade_value': trade_value,  # 新增：单笔交易价值
             'old_position': old_position,
             'new_position': new_position,
             'closed_pnl': closed_pnl,
@@ -251,15 +162,33 @@ class PositionTracker:
         else:
             return "减仓"
     
-    def _should_notify(self, action: str, size: float) -> bool:
-        """检查是否应该通知此事件"""
+    def _should_notify(self, action: str, size: float, trade_value: float) -> bool:
+        """检查是否应该通知此事件
+        
+        Args:
+            action: 交易类型（开仓、平仓等）
+            size: 交易数量
+            trade_value: 交易价值（价格 × 数量）
+        
+        Returns:
+            是否应该通知
+        """
         monitor_config = self.config.get('monitor', default={})
         
-        # 检查仓位大小阈值（修复：只有当设置了阈值且大于0时才过滤）
-        min_size = monitor_config.get('min_position_size', 0)
-        if min_size > 0 and size < min_size:
-            logging.debug(f"交易大小 {size} 小于最小阈值 {min_size}，已过滤")
-            return False
+        # 优先检查交易价值阈值（推荐使用）
+        min_trade_value = monitor_config.get('min_trade_value', 0)
+        if min_trade_value > 0:
+            if trade_value < min_trade_value:
+                logging.debug(
+                    f"交易价值 ${trade_value:,.2f} 小于最小阈值 ${min_trade_value:,.2f}，已过滤"
+                )
+                return False
+        else:
+            # 如果没有设置 min_trade_value，则使用传统的 min_position_size（向后兼容）
+            min_size = monitor_config.get('min_position_size', 0)
+            if min_size > 0 and size < min_size:
+                logging.debug(f"交易数量 {size:,.4f} 小于最小阈值 {min_size:,.4f}，已过滤")
+                return False
         
         # 检查事件类型过滤
         action_map = {
@@ -278,7 +207,7 @@ class PositionTracker:
 
 
 class WhaleMonitor:
-    """大户监控器 V2"""
+    """大户监控器 V2 (WebSocket模式)"""
     
     def __init__(self, addresses: List[str], config: Config):
         """初始化监控器"""
@@ -312,6 +241,12 @@ class WhaleMonitor:
         
         # 资产名称缓存 {asset_id: coin_name}
         self.asset_name_cache = {}
+        
+        # WebSocket 重连配置
+        self.reconnect_delay = config.get('websocket', 'reconnect_delay', default=5)
+        self.max_reconnect_delay = config.get('websocket', 'max_reconnect_delay', default=60)
+        self.reconnect_attempts = {}  # {address: attempt_count}
+        self.running = False  # 监控运行状态
         
         logging.info(f"监控器初始化完成，监控 {len(self.addresses)} 个地址")
     
@@ -364,14 +299,87 @@ class WhaleMonitor:
         # 如果无法获取，返回原始ID
         return coin_id
     
+    def _subscribe_address(self, address: str) -> bool:
+        """订阅单个地址的事件
+        
+        Args:
+            address: 用户地址
+        
+        Returns:
+            是否订阅成功
+        """
+        try:
+            # 如果已存在连接，先关闭
+            if address in self.info_instances:
+                try:
+                    old_info = self.info_instances[address]
+                    if hasattr(old_info, 'ws') and old_info.ws:
+                        old_info.ws.close()
+                except:
+                    pass
+            
+            # 创建新的WebSocket连接
+            logging.debug(f"为 {address} 创建独立的Info实例...")
+            info = self.Info(self.constants.MAINNET_API_URL, skip_ws=False)
+            
+            # 保存Info实例
+            self.info_instances[address] = info
+            
+            # 创建订阅配置
+            subscription = {"type": "userEvents", "user": address}
+            logging.debug(f"订阅配置: {subscription}")
+            
+            # 执行订阅
+            info.subscribe(
+                subscription,
+                lambda data, addr=address: self._handle_user_event(addr, data)
+            )
+            
+            # 重置重连计数
+            self.reconnect_attempts[address] = 0
+            
+            logging.info(f"✅ 订阅成功: {address}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"❌ 订阅失败 {address}: {e}")
+            logging.debug(f"详细错误信息: ", exc_info=True)
+            return False
+    
+    def _reconnect_address(self, address: str):
+        """重连单个地址
+        
+        Args:
+            address: 用户地址
+        """
+        if not self.running:
+            return
+        
+        attempt = self.reconnect_attempts.get(address, 0)
+        self.reconnect_attempts[address] = attempt + 1
+        
+        # 计算延迟（指数退避）
+        delay = min(self.reconnect_delay * (2 ** attempt), self.max_reconnect_delay)
+        
+        logging.warning(f"⚠️  {address} 连接断开，{delay}秒后尝试重连 (第{attempt + 1}次)...")
+        time.sleep(delay)
+        
+        if self._subscribe_address(address):
+            logging.info(f"✅ {address} 重连成功")
+        else:
+            # 递归重连
+            self._reconnect_address(address)
+    
     def start_monitoring(self):
         """开始监控"""
         if not self.sdk_available:
             logging.error("SDK不可用，无法启动监控")
             return
         
+        self.running = True
+        
         print(f"\n{'='*80}")
-        print(f"开始监控 {len(self.addresses)} 个大户地址")
+        print(f"开始监控 {len(self.addresses)} 个大户地址 (WebSocket模式)")
         print(f"{'='*80}\n")
         
         for i, addr in enumerate(self.addresses, 1):
@@ -385,8 +393,16 @@ class WhaleMonitor:
         # 创建持仓管理器
         position_manager = PositionManager(self.Info, self.constants)
         
-        # 获取所有地址的持仓并生成HTML报告
-        all_positions = position_manager.fetch_and_log_positions(self.addresses)
+        # 获取所有地址的持仓并生成HTML报告（使用异步版本以提升性能）
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        all_positions = loop.run_until_complete(
+            position_manager.fetch_and_log_positions_async(self.addresses, max_concurrent=10)
+        )
         
         # 初始化追踪器的仓位数据
         for address, positions in all_positions.items():
@@ -413,9 +429,6 @@ class WhaleMonitor:
         print("正在订阅用户事件...")
         print(f"{'='*80}\n")
         
-        # WebSocket连接状态检查
-        logging.debug(f"准备为 {len(self.addresses)} 个地址创建独立连接...")
-        
         # 为每个地址创建独立的Info实例并订阅
         success_count = 0
         failed_addresses = []
@@ -423,35 +436,13 @@ class WhaleMonitor:
         for idx, address in enumerate(self.addresses, 1):
             logging.debug(f"[{idx}/{len(self.addresses)}] 准备订阅地址: {address}")
             
-            try:
-                # 为每个用户创建独立的WebSocket连接
-                logging.debug(f"创建独立的Info实例...")
-                info = self.Info(self.constants.MAINNET_API_URL, skip_ws=False)
-                
-                # 保存Info实例
-                self.info_instances[address] = info
-                
-                # 创建订阅配置
-                subscription = {"type": "userEvents", "user": address}
-                logging.debug(f"订阅配置: {subscription}")
-                
-                # 执行订阅
-                info.subscribe(
-                    subscription,
-                    lambda data, addr=address: self._handle_user_event(addr, data)
-                )
-                
-                logging.info(f"✅ 已订阅 [{idx}/{len(self.addresses)}]: {address}")
+            if self._subscribe_address(address):
                 success_count += 1
-                
-                # 添加短暂延迟，避免连接创建过快
-                time.sleep(0.2)
-                
-            except Exception as e:
-                error_msg = str(e)
-                logging.error(f"❌ 订阅失败 [{idx}/{len(self.addresses)}] {address}: {error_msg}")
-                logging.debug(f"详细错误信息: ", exc_info=True)
+            else:
                 failed_addresses.append(address)
+            
+            # 添加短暂延迟，避免连接创建过快
+            time.sleep(0.2)
         
         # 输出订阅总结
         print(f"\n{'='*80}")
@@ -465,16 +456,48 @@ class WhaleMonitor:
         
         if success_count == 0:
             logging.error("没有成功订阅任何地址，退出...")
+            self.running = False
             return
         
         print(f"🎯 监控中... (按Ctrl+C停止)\n")
         
-        # 保持运行
+        # 保持运行并监控连接状态
         try:
-            while True:
-                time.sleep(1)
+            while self.running:
+                time.sleep(10)  # 每10秒检查一次连接状态
+                
+                # 检查WebSocket连接状态
+                for address in self.addresses:
+                    if address not in self.info_instances:
+                        continue
+                    
+                    info = self.info_instances[address]
+                    # 检查WebSocket是否仍然连接
+                    if hasattr(info, 'ws') and info.ws:
+                        if not info.ws.connected:
+                            logging.warning(f"⚠️  检测到 {address} 连接断开")
+                            # 在新线程中重连，避免阻塞主循环
+                            import threading
+                            threading.Thread(
+                                target=self._reconnect_address, 
+                                args=(address,),
+                                daemon=True
+                            ).start()
+                        
         except KeyboardInterrupt:
-            logging.info("\n停止监控...")
+            logging.info("\n收到停止信号，正在关闭...")
+            self.running = False
+            
+            # 关闭所有WebSocket连接
+            for address, info in self.info_instances.items():
+                try:
+                    if hasattr(info, 'ws') and info.ws:
+                        info.ws.close()
+                        logging.debug(f"已关闭 {address} 的WebSocket连接")
+                except:
+                    pass
+            
+            logging.info("监控已停止")
     
     def _handle_user_event(self, user: str, event_data: Dict):
         """处理用户事件"""
@@ -557,6 +580,7 @@ class WhaleMonitor:
             print(f"📊 方向: {trade_info['side']}")
             print(f"📈 数量: {trade_info['size']:,.4f}")
             print(f"💵 价格: ${trade_info['price']:,.4f}")
+            print(f"💰 交易价值: ${trade_info['trade_value']:,.2f}")
             
             # 仓位变化
             old_pos = trade_info['old_position']
@@ -600,134 +624,12 @@ class WhaleMonitor:
             logging.info(
                 f"{action}{dir_field} | {trade_info['user']} | {coin_name} | "
                 f"{trade_info['side']} {trade_info['size']:,.4f} @ ${trade_info['price']:,.4f} | "
+                f"价值: ${trade_info['trade_value']:,.2f} | "
                 f"仓位: {trade_info['old_position']:,.4f} → {trade_info['new_position']:,.4f} | "
                 f"{pnl_info}"
             )
 
 
-class AddressFilter:
-    """地址过滤器 - 用于跳过特定地址"""
-    
-    def __init__(self, filter_file: str = "jsons/address_filters.json"):
-        self.filter_file = filter_file
-        self.filters = self.load_filters()
-    
-    def load_filters(self) -> dict:
-        """加载过滤配置"""
-        if not Path(self.filter_file).exists():
-            logging.info(f"过滤配置文件 {self.filter_file} 不存在，不应用任何过滤")
-            return {
-                'blocked_addresses': [],
-                'blocked_display_names': [],
-                'blocked_keywords': []
-            }
-        
-        try:
-            with open(self.filter_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            filters = data.get('filters', {})
-            logging.info(f"✅ 已加载地址过滤配置: {self.filter_file}")
-            logging.info(f"   - 屏蔽地址: {len(filters.get('blocked_addresses', []))} 个")
-            logging.info(f"   - 屏蔽显示名: {len(filters.get('blocked_display_names', []))} 个")
-            logging.info(f"   - 屏蔽关键词: {len(filters.get('blocked_keywords', []))} 个")
-            return filters
-        except Exception as e:
-            logging.error(f"加载过滤配置失败: {e}")
-            return {
-                'blocked_addresses': [],
-                'blocked_display_names': [],
-                'blocked_keywords': []
-            }
-    
-    def is_blocked(self, address: str, display_name: str = None) -> tuple[bool, str]:
-        """检查地址是否被屏蔽
-        
-        Args:
-            address: 地址
-            display_name: 显示名称
-        
-        Returns:
-            (是否屏蔽, 屏蔽原因)
-        """
-        # 检查地址黑名单
-        blocked_addresses = self.filters.get('blocked_addresses', [])
-        if address.lower() in [addr.lower() for addr in blocked_addresses]:
-            return True, "地址在黑名单中"
-        
-        # 如果没有显示名称，不检查名称过滤
-        if not display_name:
-            return False, ""
-        
-        # 检查显示名称完全匹配
-        blocked_names = self.filters.get('blocked_display_names', [])
-        if display_name in blocked_names:
-            return True, f"显示名称 '{display_name}' 在黑名单中"
-        
-        # 检查关键词（不区分大小写）
-        blocked_keywords = self.filters.get('blocked_keywords', [])
-        display_name_lower = display_name.lower()
-        for keyword in blocked_keywords:
-            if keyword.lower() in display_name_lower:
-                return True, f"显示名称包含关键词 '{keyword}'"
-        
-        return False, ""
-
-
-def load_addresses_from_file(file_path: str = "jsons/top_traders_addresses.json", 
-                             apply_filter: bool = True) -> List[Dict]:
-    """从文件加载地址列表，支持过滤
-    
-    Args:
-        file_path: 地址文件路径
-        apply_filter: 是否应用过滤规则
-    
-    Returns:
-        地址信息列表 [{'address': str, 'display_name': str, 'blocked': bool}, ...]
-    """
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        addresses = data.get('addresses', [])
-        details = data.get('details', [])
-        
-        # 构建地址详情映射
-        address_map = {}
-        for detail in details:
-            addr = detail.get('ethAddress')
-            if addr:
-                address_map[addr.lower()] = {
-                    'address': addr,
-                    'display_name': detail.get('displayName'),
-                    'blocked': detail.get('block', False),
-                    'pnl': detail.get('pnl', 0),
-                    'vlm': detail.get('vlm', 0)
-                }
-        
-        # 构建结果列表
-        result = []
-        for addr in addresses:
-            addr_lower = addr.lower()
-            if addr_lower in address_map:
-                result.append(address_map[addr_lower])
-            else:
-                result.append({
-                    'address': addr,
-                    'display_name': None,
-                    'blocked': False,
-                    'pnl': 0,
-                    'vlm': 0
-                })
-        
-        return result
-        
-    except FileNotFoundError:
-        logging.error(f"未找到文件: {file_path}")
-        logging.error("请先运行 filter_top_traders.py 生成地址列表")
-        return []
-    except Exception as e:
-        logging.error(f"加载地址文件失败: {e}")
-        return []
 
 
 if __name__ == "__main__":
@@ -736,31 +638,10 @@ if __name__ == "__main__":
     
     # 设置日志（使用时间戳文件名）
     debug_mode = config.get('debug', default=False)
-    
-    # 生成日志文件路径
-    logs_dir = Path("logs")
-    logs_dir.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = str(logs_dir / f"{timestamp}.log")
-    
-    # 如果配置中指定了日志文件，使用配置的路径
-    config_log_file = config.get('notification', 'log_file')
-    if config_log_file:
-        # 检查是否是目录路径（以/结尾或就是"logs"）
-        if config_log_file.endswith('/') or config_log_file in ['logs', 'logs/']:
-            # 是目录，使用时间戳文件名
-            log_file = str(logs_dir / f"{timestamp}.log")
-        elif config_log_file.startswith('logs/') and not config_log_file.endswith('/'):
-            # 是logs目录下的具体文件，使用配置的文件名
-            log_file = config_log_file
-        elif not config_log_file.startswith('logs/'):
-            # 不在logs目录，仍使用时间戳
-            log_file = str(logs_dir / f"{timestamp}.log")
-    
-    actual_log_file = setup_logging(log_file, debug=debug_mode)
+    actual_log_file = setup_logging(log_suffix="_websocket", debug=debug_mode)
     
     logging.info("=" * 80)
-    logging.info("🐋 Hyperliquid 大户监控器 V2")
+    logging.info("🐋 Hyperliquid 大户监控器 V2 (WebSocket模式)")
     logging.info("=" * 80)
     logging.info(f"📁 配置文件: jsons/config.json")
     logging.info(f"📝 日志文件: {actual_log_file}")
@@ -780,35 +661,7 @@ if __name__ == "__main__":
     logging.info(f"📊 从文件加载了 {len(address_infos)} 个地址")
     
     # 应用过滤规则
-    filtered_addresses = []
-    blocked_addresses = []
-    
-    for addr_info in address_infos:
-        address = addr_info['address']
-        display_name = addr_info.get('display_name')
-        blocked_in_file = addr_info.get('blocked', False)
-        
-        # 检查文件中的block标记
-        if blocked_in_file:
-            blocked_addresses.append({
-                'address': address,
-                'display_name': display_name,
-                'reason': '在地址文件中标记为blocked'
-            })
-            continue
-        
-        # 检查过滤器规则
-        is_blocked, reason = address_filter.is_blocked(address, display_name)
-        if is_blocked:
-            blocked_addresses.append({
-                'address': address,
-                'display_name': display_name,
-                'reason': reason
-            })
-            continue
-        
-        # 未被屏蔽，加入监控列表
-        filtered_addresses.append(address)
+    filtered_addresses, blocked_addresses = filter_addresses(address_infos, address_filter)
     
     # 输出过滤统计
     logging.info("=" * 80)

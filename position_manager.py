@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 持仓管理器 - 获取和记录用户持仓信息
+支持异步并发模式，大幅提升多地址查询性能
 """
 import json
 import logging
+import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +33,7 @@ class PositionManager:
         self.positions_log = positions_dir / f"positions_{timestamp}.html"
     
     def fetch_user_state(self, address: str) -> Optional[Dict]:
-        """获取用户当前状态
+        """获取用户当前状态（同步方法，保留用于兼容）
         
         Args:
             address: 用户地址
@@ -49,6 +51,47 @@ class PositionManager:
             return user_state
         except Exception as e:
             logging.warning(f"获取用户状态失败 {address}: {e}")
+            return None
+    
+    async def fetch_user_state_async(self, address: str, semaphore: asyncio.Semaphore) -> tuple[str, Optional[Dict]]:
+        """异步获取用户当前状态
+        
+        Args:
+            address: 用户地址
+            semaphore: 信号量，用于控制并发数
+        
+        Returns:
+            (address, user_state) 元组
+        """
+        async with semaphore:
+            try:
+                # 在线程池中运行同步API调用
+                loop = asyncio.get_event_loop()
+                user_state = await loop.run_in_executor(
+                    None,
+                    self._fetch_user_state_sync,
+                    address
+                )
+                return (address, user_state)
+            except Exception as e:
+                logging.warning(f"异步获取用户状态失败 {address}: {e}")
+                return (address, None)
+    
+    def _fetch_user_state_sync(self, address: str) -> Optional[Dict]:
+        """同步方法，用于在异步环境中调用
+        
+        Args:
+            address: 用户地址
+        
+        Returns:
+            用户状态数据或None
+        """
+        try:
+            info = self.Info(self.constants.MAINNET_API_URL, skip_ws=True)
+            user_state = info.user_state(address)
+            return user_state
+        except Exception as e:
+            logging.debug(f"获取用户状态失败 {address}: {e}")
             return None
     
     def parse_position(self, position_data: Dict) -> Dict:
@@ -208,11 +251,12 @@ class PositionManager:
 """
         return table
     
-    def fetch_and_log_positions(self, addresses: List[str]) -> Dict[str, List[Dict]]:
-        """获取并记录所有地址的持仓信息
+    async def fetch_and_log_positions_async(self, addresses: List[str], max_concurrent: int = 10) -> Dict[str, List[Dict]]:
+        """异步获取并记录所有地址的持仓信息（推荐使用）
         
         Args:
             addresses: 地址列表
+            max_concurrent: 最大并发数（默认10，避免过载）
         
         Returns:
             {address: [positions]} 字典
@@ -220,6 +264,62 @@ class PositionManager:
         all_positions = {}
         html_tables = []
         
+        logging.info(f"🚀 开始异步获取 {len(addresses)} 个地址的持仓信息... (最大并发: {max_concurrent})")
+        
+        # 创建信号量控制并发数
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        # 创建所有异步任务
+        tasks = [
+            self.fetch_user_state_async(addr, semaphore)
+            for addr in addresses
+        ]
+        
+        # 并发执行所有任务
+        start_time = asyncio.get_event_loop().time()
+        results = await asyncio.gather(*tasks)
+        end_time = asyncio.get_event_loop().time()
+        
+        elapsed = end_time - start_time
+        logging.info(f"✅ 所有地址信息获取完毕，耗时: {elapsed:.2f}秒 (平均: {elapsed/len(addresses):.2f}秒/地址)")
+        
+        # 处理结果
+        for idx, (address, user_state) in enumerate(results, 1):
+            logging.debug(f"[{idx}/{len(addresses)}] 处理地址: {address}")
+            
+            if not user_state:
+                all_positions[address] = []
+                html_tables.append(self.generate_position_table_html(address, []))
+                continue
+            
+            # 解析持仓
+            asset_positions = user_state.get('assetPositions', [])
+            positions = []
+            
+            for pos_data in asset_positions:
+                parsed_pos = self.parse_position(pos_data)
+                if parsed_pos:
+                    positions.append(parsed_pos)
+            
+            all_positions[address] = positions
+            
+            # 生成HTML表格
+            html_table = self.generate_position_table_html(address, positions)
+            html_tables.append(html_table)
+        
+        # 生成并保存HTML报告
+        self._save_html_report(addresses, all_positions, html_tables)
+        
+        return all_positions
+    
+    def _save_html_report(self, addresses: List[str], all_positions: Dict[str, List[Dict]], html_tables: List[str]):
+        """生成并保存HTML报告
+        
+        Args:
+            addresses: 地址列表
+            all_positions: 所有地址的持仓数据
+            html_tables: HTML表格列表
+        """
         # 添加 HTML 头部和样式
         html_header = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -391,46 +491,6 @@ class PositionManager:
     </div>
 """
         
-        logging.info(f"开始获取 {len(addresses)} 个地址的持仓信息...")
-        
-        for idx, address in enumerate(addresses, 1):
-            logging.info(f"[{idx}/{len(addresses)}] 获取地址持仓: {address}")
-            
-            user_state = self.fetch_user_state(address)
-            if not user_state:
-                all_positions[address] = []
-                html_tables.append(self.generate_position_table_html(address, []))
-                continue
-            
-            # 解析持仓
-            asset_positions = user_state.get('assetPositions', [])
-            positions = []
-            
-            for pos_data in asset_positions:
-                parsed_pos = self.parse_position(pos_data)
-                if parsed_pos:
-                    positions.append(parsed_pos)
-            
-            all_positions[address] = positions
-            
-            # 生成HTML表格
-            html_table = self.generate_position_table_html(address, positions)
-            html_tables.append(html_table)
-            
-            # # 日志输出
-            # if positions:
-            #     logging.info(f"   ✅ 发现 {len(positions)} 个持仓")
-            #     for pos in positions[:3]:
-            #         logging.info(
-            #             f"      • {pos['coin']}: {pos['direction']} {pos['size']:.4f} | "
-            #             f"价值: ${pos['position_value']:,.2f} | "
-            #             f"PnL: ${pos['unrealized_pnl']:,.2f}"
-            #         )
-            #     if len(positions) > 3:
-            #         logging.info(f"      ... 还有 {len(positions) - 3} 个持仓")
-            # else:
-            #     logging.info(f"   ℹ️  无持仓")
-        
         # 计算统计数据
         total_addresses = len(addresses)
         addresses_with_positions = sum(1 for pos_list in all_positions.values() if pos_list)
@@ -498,6 +558,50 @@ class PositionManager:
             logging.info(f"✅ 持仓信息已保存到: {self.positions_log}")
         except Exception as e:
             logging.error(f"保存持仓信息失败: {e}")
+    
+    def fetch_and_log_positions(self, addresses: List[str]) -> Dict[str, List[Dict]]:
+        """获取并记录所有地址的持仓信息（同步版本，保留用于兼容）
+        
+        Args:
+            addresses: 地址列表
+        
+        Returns:
+            {address: [positions]} 字典
+            
+        Note:
+            推荐使用异步版本 fetch_and_log_positions_async 以获得更好的性能
+        """
+        all_positions = {}
+        html_tables = []
+        
+        logging.info(f"开始获取 {len(addresses)} 个地址的持仓信息... (同步模式)")
+        
+        for idx, address in enumerate(addresses, 1):
+            logging.info(f"[{idx}/{len(addresses)}] 获取地址持仓: {address}")
+            
+            user_state = self.fetch_user_state(address)
+            if not user_state:
+                all_positions[address] = []
+                html_tables.append(self.generate_position_table_html(address, []))
+                continue
+            
+            # 解析持仓
+            asset_positions = user_state.get('assetPositions', [])
+            positions = []
+            
+            for pos_data in asset_positions:
+                parsed_pos = self.parse_position(pos_data)
+                if parsed_pos:
+                    positions.append(parsed_pos)
+            
+            all_positions[address] = positions
+            
+            # 生成HTML表格
+            html_table = self.generate_position_table_html(address, positions)
+            html_tables.append(html_table)
+        
+        # 生成并保存HTML报告
+        self._save_html_report(addresses, all_positions, html_tables)
         
         return all_positions
 
