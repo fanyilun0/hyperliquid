@@ -4,7 +4,8 @@
     "blocked_addresses": [
       "0xecb63caa47c7c4e77f60f1ce858cf28dc2b82b00",
       "0x023a3d058020fb76cca98f01b3c48c8938a22355",
-      "0x856c35038594767646266bc7fd68dc26480e910d"
+      "0x856c35038594767646266bc7fd68dc26480e910d",
+      "0x7fdafde5cfb5465924316eced2d3715494c517d1"
     ],
     "blocked_display_names": [
       "Bot",

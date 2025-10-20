@@ -482,11 +482,7 @@ class WhaleMonitor:
             # 添加短暂延迟，避免连接创建过快
             time.sleep(0.2)
         
-        # 输出订阅总结
-        print(f"\n{'='*80}")
-        print(f"📊 订阅总结")
-        print(f"{'='*80}")
-        print(f"✅ 成功: {success_count}/{len(self.addresses)}")
+        print(f"📊 订阅✅ 成功: {success_count}/{len(self.addresses)}")
         if failed_addresses:
             print(f"❌ 失败: {len(failed_addresses)}/{len(self.addresses)}")
             logging.warning(f"失败地址列表: {failed_addresses}")

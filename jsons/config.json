@@ -19,7 +19,10 @@
   "websocket": {
     "reconnect_delay": 5,
     "max_reconnect_delay": 60,
-    "comment": "reconnect_delay: 初始重连延迟(秒), max_reconnect_delay: 最大重连延迟(秒), 使用指数退避策略"
+    "max_reconnect_attempts": 0,
+    "ping_interval": 20,
+    "ping_timeout": 10,
+    "comment": "reconnect_delay: 初始重连延迟(秒); max_reconnect_delay: 最大重连延迟(秒); max_reconnect_attempts: 最大重连次数(0表示无限重试); ping_interval: 心跳间隔(秒); ping_timeout: 心跳超时(秒); 使用指数退避策略和主动心跳检测防止僵尸连接"
   },
   "polling": {
     "interval": 30,
