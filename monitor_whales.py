@@ -8,6 +8,7 @@ import time
 import logging
 import os
 import asyncio
+import random
 from typing import Dict, List, Optional
 from collections import defaultdict
 from datetime import datetime
@@ -299,76 +300,113 @@ class WhaleMonitor:
         # 如果无法获取，返回原始ID
         return coin_id
     
-    def _subscribe_address(self, address: str) -> bool:
-        """订阅单个地址的事件
+    def _subscribe_address(self, address: str, max_retries: int = 5) -> bool:
+        """订阅单个地址的事件 (带指数退避重试逻辑)
         
         Args:
             address: 用户地址
+            max_retries: 最大重试次数
         
         Returns:
             是否订阅成功
         """
-        try:
-            # 如果已存在连接，先关闭
-            if address in self.info_instances:
-                try:
-                    old_info = self.info_instances[address]
-                    if hasattr(old_info, 'ws') and old_info.ws:
-                        old_info.ws.close()
-                except:
-                    pass
-            
-            # 创建新的WebSocket连接
-            logging.debug(f"为 {address} 创建独立的Info实例...")
-            info = self.Info(self.constants.MAINNET_API_URL, skip_ws=False)
-            
-            # 保存Info实例
-            self.info_instances[address] = info
-            
-            # 创建订阅配置
-            subscription = {"type": "userEvents", "user": address}
-            logging.debug(f"订阅配置: {subscription}")
-            
-            # 执行订阅
-            info.subscribe(
-                subscription,
-                lambda data, addr=address: self._handle_user_event(addr, data)
-            )
-            
-            # 重置重连计数
-            self.reconnect_attempts[address] = 0
-            
-            logging.info(f"✅ 订阅成功: {address}")
-            return True
-            
-        except Exception as e:
-            logging.error(f"❌ 订阅失败 {address}: {e}")
-            logging.debug(f"详细错误信息: ", exc_info=True)
-            return False
+        base_delay = 4  # 基础延迟时间（秒）
+        max_delay = 60  # 最大延迟时间（秒）
+        
+        for attempt in range(max_retries):
+            try:
+                # 如果已存在连接，先关闭
+                if address in self.info_instances:
+                    try:
+                        old_info = self.info_instances[address]
+                        if hasattr(old_info, 'ws') and old_info.ws:
+                            old_info.ws.close()
+                    except:
+                        pass
+                
+                # 创建新的WebSocket连接
+                logging.debug(f"为 {address} 创建独立的Info实例...")
+                info = self.Info(self.constants.MAINNET_API_URL, skip_ws=False)
+                
+                # 保存Info实例
+                self.info_instances[address] = info
+                
+                # 创建订阅配置
+                subscription = {"type": "userEvents", "user": address}
+                logging.debug(f"订阅配置: {subscription}")
+                
+                # 执行订阅
+                info.subscribe(
+                    subscription,
+                    lambda data, addr=address: self._handle_user_event(addr, data)
+                )
+                
+                # 重置重连计数
+                self.reconnect_attempts[address] = 0
+                
+                logging.info(f"✅ 订阅成功: {address}")
+                return True  # 成功后立即返回
+                
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    # 达到最大重试次数，放弃
+                    logging.error(f"❌ 订阅失败 {address} 在尝试 {max_retries} 次后放弃。错误: {e}")
+                    logging.debug(f"详细错误信息: ", exc_info=True)
+                    return False
+                
+                # 计算下一次重试的延迟时间（指数增长: 4s, 8s, 16s...）
+                delay = base_delay * (2 ** attempt)
+                # 增加一点随机性 (jitter) 来防止所有失败的连接在同一时间重试
+                jitter = random.uniform(0, 1)
+                # 确保延迟时间不超过设定的最大值
+                sleep_time = min(delay + jitter, max_delay)
+                
+                logging.warning(
+                    f"⚠️  订阅失败 {address[:10]}... (尝试 {attempt + 1}/{max_retries})。"
+                    f"将在 {sleep_time:.2f} 秒后重试... 错误: {e}"
+                )
+                time.sleep(sleep_time)
     
-    def _reconnect_address(self, address: str):
-        """重连单个地址
+    def _reconnect_address(self, address: str, max_reconnect_attempts: int = 10):
+        """重连单个地址 (带指数退避和最大重试限制)
         
         Args:
             address: 用户地址
+            max_reconnect_attempts: 最大重连尝试次数（0表示无限重试）
         """
         if not self.running:
             return
         
         attempt = self.reconnect_attempts.get(address, 0)
+        
+        # 检查是否超过最大重连次数
+        if max_reconnect_attempts > 0 and attempt >= max_reconnect_attempts:
+            logging.error(
+                f"❌ {address[:10]}... 已达到最大重连次数 ({max_reconnect_attempts})，停止重连"
+            )
+            return
+        
         self.reconnect_attempts[address] = attempt + 1
         
         # 计算延迟（指数退避）
-        delay = min(self.reconnect_delay * (2 ** attempt), self.max_reconnect_delay)
+        base_delay = self.reconnect_delay
+        delay = min(base_delay * (2 ** attempt), self.max_reconnect_delay)
+        # 添加随机抖动
+        jitter = random.uniform(0, 2)
+        sleep_time = min(delay + jitter, self.max_reconnect_delay)
         
-        logging.warning(f"⚠️  {address} 连接断开，{delay}秒后尝试重连 (第{attempt + 1}次)...")
-        time.sleep(delay)
+        logging.warning(
+            f"⚠️  {address[:10]}... 连接断开，将在 {sleep_time:.2f} 秒后尝试重连 "
+            f"(第 {attempt + 1} 次)..."
+        )
+        time.sleep(sleep_time)
         
-        if self._subscribe_address(address):
-            logging.info(f"✅ {address} 重连成功")
+        # 使用带重试逻辑的订阅方法
+        if self._subscribe_address(address, max_retries=3):
+            logging.info(f"✅ {address[:10]}... 重连成功")
         else:
             # 递归重连
-            self._reconnect_address(address)
+            self._reconnect_address(address, max_reconnect_attempts)
     
     def start_monitoring(self):
         """开始监控"""
