@@ -237,6 +237,12 @@ class WhaleMonitor:
             logging.error("请运行: pip3 install hyperliquid-python-sdk")
             self.sdk_available = False
         
+        # 创建持仓管理器（带缓存）
+        if self.sdk_available:
+            self.position_manager = PositionManager(self.Info, self.constants)
+        else:
+            self.position_manager = None
+        
         # 为每个用户创建独立的Info实例（解决多用户订阅问题）
         self.info_instances = {}
         
@@ -250,6 +256,40 @@ class WhaleMonitor:
         self.running = False  # 监控运行状态
         
         logging.info(f"监控器初始化完成，监控 {len(self.addresses)} 个地址")
+    
+    def _get_pnl_fire_emoji(self, total_pnl: float) -> str:
+        """根据Total PnL返回对应的fire emoji
+        
+        Args:
+            total_pnl: 总盈亏
+        
+        Returns:
+            fire emoji字符串
+        """
+        if total_pnl >= 10_000_000:  # >= $10M
+            return "🔥🔥🔥🔥🔥"
+        elif total_pnl >= 5_000_000:  # >= $5M
+            return "🔥🔥🔥🔥"
+        elif total_pnl >= 1_000_000:  # >= $1M
+            return "🔥🔥🔥"
+        elif total_pnl >= 500_000:    # >= $500K
+            return "🔥🔥"
+        elif total_pnl >= 100_000:    # >= $100K
+            return "🔥"
+        elif total_pnl > 0:           # > $0
+            return "✨"
+        elif total_pnl == 0:
+            return "➖"
+        elif total_pnl > -100_000:    # > -$100K
+            return "❄️"
+        elif total_pnl > -500_000:    # > -$500K
+            return "❄️❄️"
+        elif total_pnl > -1_000_000:  # > -$1M
+            return "❄️❄️❄️"
+        elif total_pnl > -5_000_000:  # > -$5M
+            return "❄️❄️❄️❄️"
+        else:                         # <= -$5M
+            return "❄️❄️❄️❄️❄️"
     
     def _get_coin_name(self, coin_id: str) -> str:
         """获取币种名称
@@ -408,6 +448,33 @@ class WhaleMonitor:
             # 递归重连
             self._reconnect_address(address, max_reconnect_attempts)
     
+    async def _periodic_data_update(self):
+        """定期更新账户数据（5分钟一次）"""
+        while self.running:
+            try:
+                # 等待5分钟
+                await asyncio.sleep(300)  # 300秒 = 5分钟
+                
+                if not self.running:
+                    break
+                
+                logging.info("🔄 定期更新账户数据（5分钟）...")
+                
+                # 更新所有地址的数据并生成报告
+                await self.position_manager.update_and_generate_report_async(
+                    self.addresses,
+                    max_concurrent=10,
+                    force_refresh=True
+                )
+                
+                logging.info("✅ 定期更新完成")
+                
+            except asyncio.CancelledError:
+                logging.info("定期更新任务已取消")
+                break
+            except Exception as e:
+                logging.error(f"定期更新失败: {e}")
+    
     def start_monitoring(self):
         """开始监控"""
         if not self.sdk_available:
@@ -428,22 +495,19 @@ class WhaleMonitor:
         print("正在获取用户初始仓位信息...")
         print(f"{'='*80}\n")
         
-        # 创建持仓管理器
-        position_manager = PositionManager(self.Info, self.constants)
-        
         # 获取所有地址的持仓并生成HTML报告（使用异步版本以提升性能）
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        all_positions = loop.run_until_complete(
-            position_manager.fetch_and_log_positions_async(self.addresses, max_concurrent=10)
+        # 使用 asyncio.run() 来运行异步任务，避免 DeprecationWarning
+        all_account_data = asyncio.run(
+            self.position_manager.update_and_generate_report_async(
+                self.addresses, 
+                max_concurrent=10,
+                force_refresh=True
+            )
         )
         
         # 初始化追踪器的仓位数据
-        for address, positions in all_positions.items():
+        for address, data in all_account_data.items():
+            positions = data.get('positions', [])
             if not positions:
                 continue
             
@@ -462,6 +526,15 @@ class WhaleMonitor:
                 ]
             }
             self.tracker.init_positions_from_state(address, user_state)
+        
+        # 启动定期更新任务（在新线程中运行）
+        import threading
+        def run_periodic_update():
+            asyncio.run(self._periodic_data_update())
+        
+        update_thread = threading.Thread(target=run_periodic_update, daemon=True)
+        update_thread.start()
+        logging.info("✅ 定期更新任务已启动（后台线程）")
         
         print(f"\n{'='*80}")
         print("正在订阅用户事件...")
@@ -575,6 +648,7 @@ class WhaleMonitor:
     def _notify_trade(self, trade_info: Dict):
         """通知交易事件"""
         action = trade_info['action']
+        user_addr = trade_info['user']
         
         # 获取币种名称（转换@ID格式）
         coin_name = self._get_coin_name(trade_info['coin'])
@@ -606,7 +680,6 @@ class WhaleMonitor:
             print(f"⏰ 时间: {timestamp}")
             
             # 用户地址 - 显示完整地址
-            user_addr = trade_info['user']
             print(f"👤 用户: {user_addr}")
             
             # 交易详情
@@ -641,6 +714,113 @@ class WhaleMonitor:
                 upnl_symbol = '📊' if unrealized_pnl > 0 else '📉'
                 upnl_status = '浮盈' if unrealized_pnl > 0 else '浮亏'
                 print(f"{upnl_symbol} 剩余持仓未实现盈亏: ${unrealized_pnl:,.2f} ({upnl_status})")
+            
+            # 从缓存获取账户汇总信息
+            try:
+                # 使用 asyncio.create_task 在当前事件循环中运行
+                account_data = None
+                try:
+                    # 尝试在现有事件循环中运行
+                    loop = asyncio.get_running_loop()
+                    # 创建任务并等待
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            asyncio.run,
+                            self.position_manager.get_account_data_async(user_addr, force_refresh=False)
+                        )
+                        account_data = future.result(timeout=5)
+                except RuntimeError:
+                    # 没有运行中的事件循环，直接运行
+                    account_data = asyncio.run(
+                        self.position_manager.get_account_data_async(user_addr, force_refresh=False)
+                    )
+                
+                if account_data:
+                    account_value = account_data.get('account_value', 0)
+                    total_position_value = account_data.get('total_position_value', 0)
+                    pnl_summary = account_data.get('pnl_summary', {})
+                    total_pnl = pnl_summary.get('total_pnl', 0)
+                    
+                    # 根据Total PnL选择fire emoji
+                    fire_emoji = self._get_pnl_fire_emoji(total_pnl)
+                    
+                    # 显示账户价值和PnL汇总
+                    print(f"\n{'─' * 80}")
+                    print(f"📊 账户汇总信息 {fire_emoji}")
+                    print(f"{'─' * 80}")
+                    
+                    print(f"💼 账户总价值: ${account_value:,.2f}")
+                    print(f"📈 持仓总价值: ${total_position_value:,.2f}")
+                    
+                    # PnL数据
+                    pnl_symbol = '💰' if total_pnl > 0 else '💸' if total_pnl < 0 else '📊'
+                    print(f"{pnl_symbol} Total PnL: ${total_pnl:,.2f}")
+                    
+                    # 阶段性PnL（如果可用）
+                    pnl_24h = pnl_summary.get('pnl_24h', 0)
+                    pnl_7d = pnl_summary.get('pnl_7d', 0)
+                    pnl_30d = pnl_summary.get('pnl_30d', 0)
+                    
+                    if pnl_24h != 0:
+                        print(f"   24-Hour PnL: ${pnl_24h:,.2f}")
+                    if pnl_7d != 0:
+                        print(f"   7-Day PnL: ${pnl_7d:,.2f}")
+                    if pnl_30d != 0:
+                        print(f"   30-Day PnL: ${pnl_30d:,.2f}")
+                    
+                    # 持仓前三
+                    top_positions = sorted(
+                        account_data.get('positions', []),
+                        key=lambda x: x['position_value'],
+                        reverse=True
+                    )[:3]
+                    
+                    if top_positions:
+                        print(f"\n📊 持仓前三（按价值）:")
+                        for idx, pos in enumerate(top_positions, 1):
+                            direction_emoji = "🟢" if pos['direction_short'] == 'Long' else "🔴"
+                            pnl_display = f"+${pos['unrealized_pnl']:,.2f}" if pos['unrealized_pnl'] > 0 else f"${pos['unrealized_pnl']:,.2f}"
+                            print(
+                                f"   {idx}. {direction_emoji} {pos['coin']} | "
+                                f"${pos['position_value']:,.2f} | "
+                                f"PnL: {pnl_display}"
+                            )
+                    
+                    # 挂单前三
+                    open_orders = account_data.get('open_orders', [])
+                    if open_orders:
+                        orders_with_value = []
+                        for order in open_orders:
+                            try:
+                                order_info = order.get('order', {})
+                                limit_px = float(order_info.get('limitPx', 0))
+                                sz = float(order_info.get('sz', 0))
+                                order_value = limit_px * sz
+                                
+                                orders_with_value.append({
+                                    'coin': order_info.get('coin', 'N/A'),
+                                    'side': '买入' if order_info.get('side') == 'B' else '卖出',
+                                    'price': limit_px,
+                                    'order_value': order_value,
+                                })
+                            except:
+                                continue
+                        
+                        top_orders = sorted(orders_with_value, key=lambda x: x['order_value'], reverse=True)[:3]
+                        
+                        if top_orders:
+                            print(f"\n📋 挂单前三（按价值）:")
+                            for idx, order in enumerate(top_orders, 1):
+                                side_emoji = "🟢" if order['side'] == '买入' else "🔴"
+                                print(
+                                    f"   {idx}. {side_emoji} {order['coin']} | "
+                                    f"{order['side']} @ ${order['price']:,.4f} | "
+                                    f"价值: ${order['order_value']:,.2f}"
+                                )
+                    
+            except Exception as e:
+                logging.debug(f"获取账户汇总信息失败: {e}")
             
             # 底部分隔线
             print(f"{'━' * 80}\n")
@@ -703,15 +883,6 @@ if __name__ == "__main__":
     logging.info("=" * 80)
     logging.info(f"✅ 有效地址: {len(filtered_addresses)} 个")
     logging.info(f"🚫 屏蔽地址: {len(blocked_addresses)} 个")
-    
-    if blocked_addresses:
-        logging.info("\n🚫 已屏蔽的地址:")
-        for idx, blocked in enumerate(blocked_addresses, 1):
-            name_str = f" ({blocked['display_name']})" if blocked['display_name'] else ""
-            logging.info(f"   {idx}. {blocked['address']}{name_str}")
-            logging.info(f"      原因: {blocked['reason']}")
-    
-    logging.info("=" * 80)
     
     if not filtered_addresses:
         logging.error("❌ 没有有效的监控地址（全部被过滤），退出...")
